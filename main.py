@@ -10,6 +10,7 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import PercentFormatter
 from matplotlib.lines import Line2D
 from pmdarima import auto_arima
+from statsmodels.tsa.arima.model import ARIMA
 
 
 class FieldName:
@@ -86,6 +87,7 @@ if __name__ == '__main__':
 
     # Check if a new CPI number has been released since the last column
     if datetime.datetime.now() >= cpi_release:
+        updated = True
         start = df_last_date - datetime.timedelta(days=1)  # Get one day prior to latest date to normalize data
         end = datetime.date.today().isoformat()
         md = quandl.MergedDataset(fields.qdl_codes) \
@@ -104,6 +106,8 @@ if __name__ == '__main__':
         df2.drop(index=df2.index[0], inplace=True)
         df = pd.concat([df, df2], ignore_index=True)
         df.set_index('DATE').to_csv('cpi-and-commodity-data.csv', index_label='DATE')
+    else:
+        updated = False
 
     # Month over month percent change
     pct = pd.DataFrame(df)
@@ -200,17 +204,70 @@ if __name__ == '__main__':
 
     # Auto ARIMA
     # https://towardsdatascience.com/time-series-forecasting-with-arima-sarima-and-sarimax-ee61099e78f6
-    ar_exg = auto_arima(train_y, train_x, m=12, seasonal=True, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
-    ar_end = auto_arima(train_y, seasonal=True, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
+    ar_exg, ar_end, ar_exg_all, ar_end_all = None, None, None, None
+    # TODO: Update
+    updated = True
+    if updated is True:
+        ar_exg = auto_arima(train_y, train_x, m=12, seasonal=True, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
+        ar_exg_all = auto_arima(y, x, m=12, seasonal=True, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
+        ar_end = auto_arima(train_y, seasonal=True, m=12, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
+        ar_end_all = auto_arima(y, seasonal=True, m=12, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
+        ar_csv = pd.DataFrame()
+        ar_order = pd.Series(ar_exg.order, ar_exg_all.order, ar_end.order, ar_end_all.order)
+        ar_csv['order'] = ar_order
+        ar_seasonal = pd.Series(ar_exg.seasonal_order, ar_exg_all.seasonal_order,
+                                ar_end.seasonal_order, ar_end_all.seasonal_order)
+        ar_csv['seasonal_order'] = ar_seasonal
+        ar_csv.to_csv('arima-order.csv')
+    else:
+        arima_csv = pd.read_csv('arima-order.csv')
+        for index, row in arima_csv.iterrows():
+            order = row['order']
+            order = eval(order)
+            seasonal_order = row['seasonal_order']
+            if type(seasonal_order) is str:
+                seasonal_order = eval(seasonal_order)
+                if index == 0:
+                    ar_exg = ARIMA(train_y, train_x, order=order, seasonal_order=seasonal_order,
+                                   enforce_stationarity=False, enforce_invertibility=False).fit()
+                if index == 1:
+                    ar_end = ARIMA(train_y, order=order, seasonal_order=seasonal_order,
+                                   enforce_stationarity=False, enforce_invertibility=False).fit()
+                if index == 2:
+                    ar_exg_all = ARIMA(y, x, order=order, seasonal_order=seasonal_order,
+                                       enforce_stationarity=False, enforce_invertibility=False).fit()
+                if index == 3:
+                    ar_end_all = ARIMA(y, order=order, seasonal_order=seasonal_order,
+                                       enforce_stationarity=False, enforce_invertibility=False).fit()
+            else:
+                if index == 0:
+                    ar_exg = ARIMA(train_y, train_x, order=order, enforce_invertibility=False,
+                                   enforce_stationarity=False).fit()
+                if index == 1:
+                    ar_end = ARIMA(train_y, order=order, enforce_invertibility=False,
+                                   enforce_stationarity=False).fit()
+                if index == 2:
+                    ar_exg_all = ARIMA(y, x, order=order, enforce_invertibility=False,
+                                       enforce_stationarity=False).fit()
+                if index == 3:
+                    ar_end_all = ARIMA(y, order=order, enforce_invertibility=False,
+                                       enforce_stationarity=False).fit()
     ar_tests = [ar_exg, ar_end]
-    ar_exg_all = auto_arima(train_y, train_x, m=12, seasonal=True, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
-    ar_end_all = auto_arima(train_y, seasonal=True, start_p=0, start_q=0, d=0, start_P=0, start_Q=0)
     ar_predict = [ar_exg_all, ar_end_all]
 
     # Figure 4. Predictive Model
-    for ar, i in ar_tests:
-        predict = ar.predict(start=train_len, end=df_len-1, exog=test_x)
-        conf = ar.get_prediction(start=train_len, end=df_len-1, exog=test_x).conf_int()
+    for ar, i in ar_tests, range(len(ar_tests)):
+        if updated is True:
+            if i < 2:
+                predict, conf = ar.predict(start=train_len, end=df_len-1, exog=test_x, conf_int=True)
+            else:
+                predict, conf = ar.predict(start=train_len, end=df_len - 1, conf_int=True)
+        else:
+            if i < 2:
+                predict = ar.predict(start=train_len, end=df_len-1, exog=test_x)
+            else:
+                predict = ar.predict(start=train_len, end=df_len-1)
+            conf = predict.conf_int()
         test_y['CPI Estimate'] = predict
         test_y['Lower ARIMA estimate'] = conf['lower CPI']
         test_y['Upper ARIMA estimate'] = conf['upper CPI']
